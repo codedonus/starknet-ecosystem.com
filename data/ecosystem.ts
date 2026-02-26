@@ -452,7 +452,7 @@ export const allProjects: Array<Project> = [
     id: "4c348901-0933-4e38-b842-e16df859e130",
     name: "SBSecurity",
     shortName: "SBSecurity",
-    description: "Smart Contract Auditing company, with extensive experience in auditing projects on Starknet, providing comprehensive security assessments to ensure the safety and reliability of decentralized applications.",
+    description: "Smart Contract Auditing company, with extensive experience in auditing projects on Starknet. In total, the company protects over $1.1B in TVL across multiple chains, with over 100 audits completed.",
     tags: ["security"],
     image: "SBSecurity.png",
     network: {
