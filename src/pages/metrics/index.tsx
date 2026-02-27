@@ -1,5 +1,5 @@
 import { Box, Flex, Grid, HStack, Text, VStack } from "@chakra-ui/layout";
-import { Icon, Link as ChakraLink, Spinner } from "@chakra-ui/react";
+import { Icon, Link as ChakraLink } from "@chakra-ui/react";
 import Head from "next/head";
 import {
   faChartLine,
@@ -17,6 +17,8 @@ import {
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import type { FC } from "react";
 import { useEffect, useState } from "react";
+import useSWR from "swr";
+
 import { useTranslate } from "../../context/TranslateProvider";
 
 // Format large numbers
@@ -99,7 +101,16 @@ function MetricCard({
       </Text>
 
       {loading ? (
-        <Spinner size="sm" color="accent.500" />
+        <VStack align="flex-start" spacing={2} mt={1} sx={{
+          "@keyframes skeletonPulse": { "0%, 100%": { opacity: 0.4 }, "50%": { opacity: 1 } },
+        }}>
+          <Box w="80%" h="24px" bg="whiteAlpha.100" borderRadius="2px" sx={{
+            animation: "skeletonPulse 1.5s ease-in-out infinite",
+          }} />
+          <Box w="50%" h="14px" bg="whiteAlpha.050" borderRadius="2px" sx={{
+            animation: "skeletonPulse 1.5s ease-in-out 0.2s infinite",
+          }} />
+        </VStack>
       ) : (
         <>
           <Text fontSize="24px" fontWeight="700" color="white" fontFamily="mono" lineHeight="1.2">
@@ -156,95 +167,85 @@ function DashboardLink({ title, href, tag }: { title: string; href: string; tag?
   );
 }
 
+async function fetchMetrics() {
+  const [strkRes, validatorsRes, tvlRes, dexRes, feesRes] = await Promise.all([
+    fetch("https://starknet.impulse.avnu.fi/v3/tokens"),
+    fetch("https://api.dashboard.endur.fi/api/query/validators?page=1&per_page=400&sort_by=total_stake&sort_order=desc"),
+    fetch("https://api.llama.fi/v2/chains"),
+    fetch("https://api.llama.fi/overview/dexs/starknet?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true"),
+    fetch("https://api.llama.fi/overview/fees/starknet?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true"),
+  ]);
+
+  const [strkTokens, validatorsData, tvlData, dexData, feesData] = await Promise.all([
+    strkRes.json(),
+    validatorsRes.json(),
+    tvlRes.json(),
+    dexRes.json(),
+    feesRes.json(),
+  ]);
+
+  const strk = strkTokens.find((t: any) => t.symbol === "STRK");
+  const btcToken = strkTokens.find((t: any) => t.symbol === "WBTC" || t.symbol === "BTC");
+
+  const allValidators = validatorsData.validators || [];
+  const activeVals = allValidators.filter((v: any) => v.is_active);
+  const totalStrkStaked = allValidators.reduce((acc: number, v: any) => acc + parseFloat(v.total_stake || 0), 0) / 1e18;
+  const totalBtcStaked = allValidators.reduce((acc: number, v: any) => acc + parseFloat(v.total_stake_btc || 0), 0) / 1e8;
+  const totalDelegators = allValidators.reduce((acc: number, v: any) => acc + (v.delegators_count || 0), 0);
+  const totalBtcDelegators = allValidators.reduce((acc: number, v: any) => acc + (v.delegators_count_btc || 0), 0);
+  const avgApy = activeVals.length > 0 ? activeVals.reduce((acc: number, v: any) => acc + (v.apy || 0), 0) / activeVals.length : 0;
+
+  const starknetTvl = tvlData.find((c: any) => c.name === "Starknet");
+
+  return {
+    strkData: strk || null,
+    stakingStats: {
+      totalStrkStaked,
+      totalBtcStaked,
+      totalDelegators,
+      totalBtcDelegators,
+      activeValidators: activeVals.length,
+      totalValidators: allValidators.length,
+      avgApy,
+    },
+    btcPrice: btcToken?.global?.usd ?? btcToken?.starknet?.usd ?? null,
+    defiData: {
+      tvl: starknetTvl?.tvl ?? null,
+      dexVolume24h: dexData?.total24h ?? null,
+      dexVolume7d: dexData?.total7d ?? null,
+      fees24h: feesData?.total24h ?? null,
+      fees30d: feesData?.total30d ?? null,
+    },
+    fetchedAt: new Date(),
+  };
+}
+
 const MetricsPage: FC = () => {
   const { t } = useTranslate();
-  const [loading, setLoading] = useState(true);
-  const [strkData, setStrkData] = useState<any>(null);
-  const [stakingStats, setStakingStats] = useState<{
-    totalStrkStaked: number;
-    totalBtcStaked: number;
-    totalDelegators: number;
-    totalBtcDelegators: number;
-    activeValidators: number;
-    totalValidators: number;
-    avgApy: number;
-  } | null>(null);
-  const [btcPrice, setBtcPrice] = useState<number | null>(null);
-  const [defiData, setDefiData] = useState<any>(null);
+  const { data: metricsData, isLoading: loading } = useSWR("starknet-metrics", fetchMetrics, {
+    revalidateOnFocus: false,
+  });
+  const [timeAgo, setTimeAgo] = useState("");
 
+  const strkData = metricsData?.strkData ?? null;
+  const stakingStats = metricsData?.stakingStats ?? null;
+  const btcPrice = metricsData?.btcPrice ?? null;
+  const defiData = metricsData?.defiData ?? null;
+  const lastUpdated = metricsData?.fetchedAt ?? null;
+
+  // Update "time ago" every 30s
   useEffect(() => {
-    async function fetchAllData() {
-      try {
-        // Fetch STRK token data from avnu
-        const strkRes = await fetch("https://starknet.impulse.avnu.fi/v3/tokens");
-        const strkTokens = await strkRes.json();
-        const strk = strkTokens.find((t: any) => t.symbol === "STRK");
-        const btc = strkTokens.find((t: any) => t.symbol === "WBTC" || t.symbol === "BTC");
-        setStrkData(strk);
-        setBtcPrice(btc?.global?.usd ?? btc?.starknet?.usd ?? null);
-
-        // Fetch all validators from Endur and aggregate network-wide staking stats
-        const validatorsRes = await fetch(
-          "https://api.dashboard.endur.fi/api/query/validators?page=1&per_page=400&sort_by=total_stake&sort_order=desc"
-        );
-        const validatorsData = await validatorsRes.json();
-        const allValidators = validatorsData.validators || [];
-
-        // Aggregate staking stats from all validators
-        const activeValidators = allValidators.filter((v: any) => v.is_active);
-        const totalStrkStaked = allValidators.reduce((acc: number, v: any) =>
-          acc + parseFloat(v.total_stake || 0), 0) / 1e18; // Convert from wei
-        const totalBtcStaked = allValidators.reduce((acc: number, v: any) =>
-          acc + parseFloat(v.total_stake_btc || 0), 0) / 1e8; // Convert from satoshis
-        const totalDelegators = allValidators.reduce((acc: number, v: any) =>
-          acc + (v.delegators_count || 0), 0);
-        const avgApy = activeValidators.length > 0
-          ? activeValidators.reduce((acc: number, v: any) => acc + (v.apy || 0), 0) / activeValidators.length
-          : 0;
-
-        const totalBtcDelegators = allValidators.reduce((acc: number, v: any) =>
-          acc + (v.delegators_count_btc || 0), 0);
-
-        setStakingStats({
-          totalStrkStaked,
-          totalBtcStaked,
-          totalDelegators,
-          totalBtcDelegators,
-          activeValidators: activeValidators.length,
-          totalValidators: allValidators.length,
-          avgApy,
-        });
-
-        // Fetch DeFi data from DefiLlama
-        const [tvlRes, dexRes, feesRes] = await Promise.all([
-          fetch("https://api.llama.fi/v2/chains"),
-          fetch("https://api.llama.fi/overview/dexs/starknet?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true"),
-          fetch("https://api.llama.fi/overview/fees/starknet?excludeTotalDataChart=true&excludeTotalDataChartBreakdown=true"),
-        ]);
-
-        const tvlData = await tvlRes.json();
-        const dexData = await dexRes.json();
-        const feesData = await feesRes.json();
-
-        const starknetTvl = tvlData.find((c: any) => c.name === "Starknet");
-
-        setDefiData({
-          tvl: starknetTvl?.tvl,
-          dexVolume24h: dexData?.total24h,
-          dexVolume7d: dexData?.total7d,
-          fees24h: feesData?.total24h,
-          fees30d: feesData?.total30d,
-        });
-
-        setLoading(false);
-      } catch (err) {
-        console.error("Failed to fetch metrics:", err);
-        setLoading(false);
-      }
-    }
-
-    fetchAllData();
-  }, []);
+    if (!lastUpdated) return;
+    const update = () => {
+      const seconds = Math.floor((Date.now() - lastUpdated.getTime()) / 1000);
+      if (seconds < 60) setTimeAgo("just now");
+      else if (seconds < 3600) setTimeAgo(`${Math.floor(seconds / 60)}m ago`);
+      else setTimeAgo(`${Math.floor(seconds / 3600)}h ago`);
+    };
+    update();
+    const interval = setInterval(update, 30000);
+    return () => clearInterval(interval);
+  }, [lastUpdated]);
 
   // Calculate staking TVL in USD using STRK price
   const strkPrice = strkData?.starknet?.usd || 0;
@@ -269,6 +270,11 @@ const MetricsPage: FC = () => {
               {t.metrics?.hero_eyebrow || "Live Dashboard"}
             </Text>
             <Box w="8px" h="8px" borderRadius="full" bg="#22C55E" boxShadow="0 0 10px #22C55E" />
+            {timeAgo && (
+              <Text fontSize="11px" color="gray.600">
+                Updated {timeAgo}
+              </Text>
+            )}
           </Flex>
           <Text
             as="h1"
